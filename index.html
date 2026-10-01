@@ -44,6 +44,12 @@
     .modehint{font-size:.78rem;color:var(--muted);margin-top:7px}
     .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:100;background:#17211c;color:white;padding:11px 15px;border-radius:999px;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:.2s;max-width:90%;text-align:center}
     .toast.show{opacity:1}
+    .consume-list{display:grid;gap:9px;max-height:55vh;overflow:auto;margin-top:10px}
+    .consume-row{border:1px solid var(--border);border-radius:14px;padding:11px}
+    .consume-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+    .consume-controls{display:grid;grid-template-columns:90px 1fr;gap:8px;margin-top:9px}
+    .consume-controls input{text-align:center}
+    .consume-empty{text-align:center;color:var(--muted);padding:24px}
     .filters{display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px}
     input,select{width:100%;padding:12px;border:1px solid var(--border);border-radius:11px;background:white}
     .list{display:grid;gap:9px}
@@ -150,6 +156,18 @@
         <button class="ghost" id="torchBtn">🔦 Licht</button>
         <button class="danger" id="closeScanBtn">Schließen</button>
       </div>
+    </div>
+  </div>
+</dialog>
+
+
+<dialog id="consumeDialog">
+  <div class="dlg">
+    <h2>Manuell verbrauchen</h2>
+    <input id="manualConsumeSearch" placeholder="Produkt, Marke oder Barcode suchen">
+    <div id="manualConsumeList" class="consume-list"></div>
+    <div class="actions" style="margin-top:14px">
+      <button class="ghost" type="button" id="closeConsumeBtn">Schließen</button>
     </div>
   </div>
 </dialog>
@@ -264,7 +282,8 @@ function setMode(mode){
   $('modeHint').textContent=inMode
     ?'Einlagern: Neue Packung erfassen oder vorhandenen Bestand erhöhen.'
     :'Verbrauchen: Scan zieht automatisch 1 Packung ab. Bei mehreren Chargen zuerst das früheste MHD.';
-  $('manualBtn').style.display=inMode?'inline-block':'none';
+  $('manualBtn').style.display='inline-block';
+  $('manualBtn').textContent=inMode?'＋ Manuell':'✋ Manuell verbrauchen';
 }
 function expiryRank(x){
   if(!x.expiry) return Number.MAX_SAFE_INTEGER;
@@ -329,6 +348,129 @@ function stockBarcode(code){
 $('modeInBtn').onclick=()=>setMode('in');
 $('modeOutBtn').onclick=()=>setMode('out');
 
+
+function manualGroups(){
+  const map=new Map();
+  for(const x of items){
+    const qty=Number(x.qty)||0;
+    if(qty<=0) continue;
+    const key=x.barcode ? 'b:'+x.barcode : 'i:'+x.id;
+    if(!map.has(key)){
+      map.set(key,{
+        key,
+        name:x.name||'Ohne Namen',
+        brand:x.brand||'',
+        barcode:x.barcode||'',
+        qty:0,
+        earliest:null
+      });
+    }
+    const g=map.get(key);
+    g.qty+=qty;
+    if(x.expiry && (!g.earliest || x.expiry<g.earliest)) g.earliest=x.expiry;
+  }
+  return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name,'de'));
+}
+
+function renderManualConsume(){
+  const q=($('manualConsumeSearch').value||'').trim().toLowerCase();
+  const groups=manualGroups().filter(g=>{
+    const hay=[g.name,g.brand,g.barcode].join(' ').toLowerCase();
+    return !q || hay.includes(q);
+  });
+
+  const box=$('manualConsumeList');
+  if(!groups.length){
+    box.innerHTML='<div class="consume-empty">Kein passender Bestand vorhanden.</div>';
+    return;
+  }
+
+  box.innerHTML=groups.map(g=>{
+    const mhd=g.earliest
+      ?`Frühestes MHD: ${new Date(g.earliest+'T00:00:00').toLocaleDateString('de-DE')}`
+      :'Kein MHD gespeichert';
+    return `
+      <div class="consume-row">
+        <div class="consume-top">
+          <div>
+            <div class="name">${esc(g.name)}</div>
+            <div class="meta">${esc(g.brand)}${g.brand&&g.barcode?' · ':''}${esc(g.barcode)}</div>
+            <div class="meta">${mhd}</div>
+          </div>
+          <div class="qty">${g.qty}×</div>
+        </div>
+        <div class="consume-controls">
+          <input class="manualConsumeQty" type="number" min="1" max="${g.qty}" step="1" value="1">
+          <button class="danger manualConsumeDo" data-key="${esc(g.key)}">Verbrauchen</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  box.querySelectorAll('.manualConsumeDo').forEach(btn=>{
+    btn.onclick=()=>{
+      const row=btn.closest('.consume-row');
+      const amount=Math.max(1,Math.floor(Number(row.querySelector('.manualConsumeQty').value)||1));
+      consumeManual(btn.dataset.key,amount);
+    };
+  });
+}
+
+function openManualConsume(){
+  $('manualConsumeSearch').value='';
+  renderManualConsume();
+  $('consumeDialog').showModal();
+}
+
+function consumeManual(key,amount){
+  let matches=[];
+  if(key.startsWith('b:')){
+    const barcode=key.slice(2);
+    matches=items
+      .filter(x=>x.barcode===barcode && (Number(x.qty)||0)>0)
+      .sort((a,b)=>expiryRank(a)-expiryRank(b));
+  }else if(key.startsWith('i:')){
+    const id=key.slice(2);
+    matches=items.filter(x=>x.id===id && (Number(x.qty)||0)>0);
+  }
+
+  if(!matches.length){
+    alert('Kein Bestand mehr vorhanden.');
+    renderManualConsume();
+    return;
+  }
+
+  const available=matches.reduce((sum,x)=>sum+(Number(x.qty)||0),0);
+  if(amount>available){
+    alert(`Es sind nur ${available} Packung(en) vorhanden.`);
+    return;
+  }
+
+  const first=matches[0];
+  const d=daysUntil(first.expiry);
+  if(d!==null && d<0){
+    const ok=confirm(
+      `${first.name}\n\nDie zuerst zu verbrauchende Charge ist seit ${Math.abs(d)} Tag(en) über dem MHD.\nTrotzdem ${amount} Packung(en) abbuchen?`
+    );
+    if(!ok) return;
+  }
+
+  let left=amount;
+  for(const x of matches){
+    if(left<=0) break;
+    const q=Number(x.qty)||0;
+    const take=Math.min(q,left);
+    x.qty=q-take;
+    left-=take;
+  }
+
+  persist();
+  render();
+  renderManualConsume();
+  showToast(`−${amount} ${first.name}`);
+}
+$('manualConsumeSearch').addEventListener('input',renderManualConsume);
+$('closeConsumeBtn').onclick=()=>$('consumeDialog').close();
+
 function openManual(prefill={}){
   editingId=null;$('editTitle').textContent='Lebensmittel speichern';
   $('fBarcode').value=prefill.barcode||'';$('fName').value=prefill.name||'';$('fBrand').value=prefill.brand||'';
@@ -360,7 +502,7 @@ $('editForm').addEventListener('submit',e=>{
   persist();$('editDialog').close();render();
 });
 $('cancelEditBtn').onclick=()=>$('editDialog').close();
-$('manualBtn').onclick=()=>openManual();
+$('manualBtn').onclick=()=>scanMode==='in'?openManual():openManualConsume();
 ['search','placeFilter','expiryFilter'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',render));
 
 function beep(){
