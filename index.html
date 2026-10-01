@@ -114,11 +114,9 @@
         <div><b>☁ Gerätesynchronisation</b></div>
         <div class="auth-grid">
           <input id="authEmail" class="full" type="email" placeholder="E-Mail-Adresse">
-          <input id="authPassword" type="password" placeholder="Passwort (mind. 6 Zeichen)">
-          <button class="secondary" id="signInBtn" type="button">Anmelden</button>
-          <button class="ghost full" id="signUpBtn" type="button">Neues Konto anlegen</button>
+          <button class="secondary full" id="magicLinkBtn" type="button">✉️ Anmeldelink senden</button>
         </div>
-        <div class="sync-status">Mit demselben Konto auf Tablet und Handy anmelden.</div>
+        <div class="sync-status">Kein Passwort nötig. Öffne den Link aus der E-Mail auf diesem Gerät.</div>
       </div>
       <div id="syncLoggedIn" style="display:none">
         <div class="sync-row">
@@ -445,8 +443,13 @@ async function initSupabase(){
   if(!supabaseClient) return;
   const {data}=await supabaseClient.auth.getSession();
   await handleAuthSession(data?.session||null);
-  supabaseClient.auth.onAuthStateChange((_event,session)=>{
-    setTimeout(()=>handleAuthSession(session),0);
+  supabaseClient.auth.onAuthStateChange((event,session)=>{
+    setTimeout(async()=>{
+      await handleAuthSession(session);
+      if(event==='SIGNED_IN' && session?.user){
+        showToast('Angemeldet · Synchronisation aktiv');
+      }
+    },0);
   });
 }
 
@@ -812,23 +815,32 @@ window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPro
 $('installBtn').onclick=async()=>{if(!deferredPrompt)return;deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('installBtn').style.display='none';};
 
 
-$('signInBtn').onclick=async()=>{
+$('magicLinkBtn').onclick=async()=>{
   const email=$('authEmail').value.trim();
-  const password=$('authPassword').value;
-  if(!email||!password){alert('Bitte E-Mail und Passwort eingeben.');return;}
-  const {error}=await supabaseClient.auth.signInWithPassword({email,password});
-  if(error) alert('Anmeldung fehlgeschlagen: '+error.message);
-};
-$('signUpBtn').onclick=async()=>{
-  const email=$('authEmail').value.trim();
-  const password=$('authPassword').value;
-  if(!email||password.length<6){alert('Bitte E-Mail und ein Passwort mit mindestens 6 Zeichen eingeben.');return;}
-  const {data,error}=await supabaseClient.auth.signUp({email,password});
-  if(error){alert('Konto konnte nicht angelegt werden: '+error.message);return;}
-  if(data?.session){
-    alert('Konto angelegt und angemeldet.');
-  }else{
-    alert('Konto angelegt. Bitte bestätige ggf. die E-Mail und melde dich danach an.');
+  if(!email){
+    alert('Bitte deine E-Mail-Adresse eingeben.');
+    return;
+  }
+  const redirectTo='https://gregorian739-cloud.github.io/Vorrat/';
+  const btn=$('magicLinkBtn');
+  const oldText=btn.textContent;
+  btn.disabled=true;
+  btn.textContent='Sende Link …';
+  try{
+    const {error}=await supabaseClient.auth.signInWithOtp({
+      email,
+      options:{
+        emailRedirectTo:redirectTo,
+        shouldCreateUser:false
+      }
+    });
+    if(error) throw error;
+    alert('Anmeldelink wurde gesendet. Öffne die Mail auf diesem Gerät und tippe auf den Link.');
+  }catch(e){
+    alert('Anmeldelink konnte nicht gesendet werden: '+(e?.message||e));
+  }finally{
+    btn.disabled=false;
+    btn.textContent=oldText;
   }
 };
 $('signOutBtn').onclick=async()=>{await supabaseClient.auth.signOut();};
